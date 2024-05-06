@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -19,30 +20,30 @@ type OperationError struct {
 }
 
 type OperationResult struct {
-	Result    float64 `json:"result"`
-	Operation string  `json:"op"`
+	Result    string `json:"result"`
+	Operation string `json:"op"`
 }
 
-var operators = map[string]Calcular{
-	"*":   &Multiplicacao{},
-	"mul": &Multiplicacao{},
-	"-":   &Subtracao{},
-	"sub": &Subtracao{},
-	"+":   &Soma{},
-	"sum": &Soma{},
-	"/":   &Divisao{},
-	"div": &Divisao{},
-	"^":   &Potencia{},
-	"pow": &Potencia{},
-	"&":   &Radiciacao{},
-	"rot": &Radiciacao{},
+var operators = map[string]Mathematician{
+	"*":   Mult{},
+	"mul": Mult{},
+	"+":   Sum{},
+	"sum": Sum{},
+	"-":   Sub{},
+	"sub": Sub{},
+	"/":   Div{},
+	"div": Div{},
+	"^":   Pow{},
+	"pow": Pow{},
+	"&":   Rot{},
+	"rot": Rot{},
 }
 
-type calc_Handler struct{}
+type CalculatorHandler struct{}
 
-func (calc_Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+func (CalculatorHandler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 
-	log.Print("[INFO]" + req.Method + " " + req.URL.Path)
+	log.Print("[INFO] " + req.Method + " " + req.URL.Path + " " + req.URL.RawQuery)
 
 	if req.Method != "GET" || req.URL.Path != "/result" {
 		e := ErrorMessage{Code: 404, Error: "Not Found"}
@@ -52,10 +53,17 @@ func (calc_Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	operation := req.URL.Query().Get("op")
+	// Gets the raw query and parse it. The `req.URL.Query()` function is encoding it, making it unusable
+	// First, it removes the trailing "op=", and then remove any spaces
+	operation := strings.TrimLeft(req.URL.RawQuery, "op=")
+	operation = strings.ReplaceAll(operation, " ", "")
+	operation = strings.ReplaceAll(operation, "%20", "")
+
+	log.Print("[INFO] Operation query: " + operation)
+	log.Print("[INFO] Headers: " + req.Header.Get("Content-Type"))
 
 	if !isOperationValid(operation) {
-		c := OperationError{Result: "invalid expression", Operation: operation}
+		c := OperationError{Result: "Invalid expression", Operation: operation}
 		r, _ := json.Marshal(c)
 		resp.WriteHeader(400)
 		resp.Write(r)
@@ -63,15 +71,31 @@ func (calc_Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 
 	operator := getOperatorFromString(operation)
-	numbers := strings.Split(operation, operator)
-
 	mathe := operators[operator]
-	x, _ := strconv.ParseFloat(numbers[0], 64)
-	y, _ := strconv.ParseFloat(numbers[1], 64)
+	params := getOperationParametersFromRawOperation(operation, operator)
 
-	result := mathe.Calcular(x, y)
+	result, calcErr := mathe.Calculate(params)
 
-	c := OperationResult{Result: result, Operation: operation}
+	if calcErr != nil {
+		calcErrMessage := "Could not calculate correctly. Please review the operation"
+
+		if errors.Is(calcErr, ErrInvalidRoot) {
+			calcErrMessage = "Invalid root"
+		}
+
+		e := ErrorMessage{Code: 400, Error: calcErrMessage}
+		r, _ := json.Marshal(e)
+		resp.WriteHeader(400)
+		resp.Write(r)
+		return
+	}
+
+	log.Print("[INFO] Operation result: ", result)
+
+	resultString := strconv.FormatFloat(result, 'g', -1, 64)
+	log.Print("[INFO] Operation output: ", resultString)
+
+	c := OperationResult{Result: resultString, Operation: operation}
 	r, _ := json.Marshal(c)
 	resp.WriteHeader(200)
 	resp.Write(r)
@@ -94,6 +118,5 @@ func getOperatorFromString(op string) string {
 			return k
 		}
 	}
-
 	return ""
 }
